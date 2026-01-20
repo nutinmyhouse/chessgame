@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chromatic Royale Chess</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>Chromatic Royale Chess</h1>
+        <p>
+          Four players battle with a single piece that downgrades on capture. Only
+          the fog of war reveals what your piece can see.
+        </p>
+        <p id="connection" class="status muted">Connecting to lobby server…</p>
+      </div>
+      <button id="reset">Reset Game</button>
+    </header>
+
+    <main>
+      <section class="panel">
+        <h2>Lobby</h2>
+        <div id="lobby" class="lobby"></div>
+        <p id="lobby-status" class="status">Waiting for 4 players to join.</p>
+
+        <h2>Turn Tracker</h2>
+        <div id="turn-info" class="turn-info"></div>
+
+        <h2>Piece Grades</h2>
+        <div id="grades" class="grades"></div>
+
+        <h2>Bishop Announcements</h2>
+        <div id="bishop-announcements" class="announcements">
+          <p class="muted">No bishops announced yet.</p>
+        </div>
+
+        <h2>View as Player</h2>
+        <select id="view-select"></select>
+
+        <h2>Action Log</h2>
+        <div id="log" class="log"></div>
+      </section>
+
+      <section class="board-section">
+        <div class="board-header">
+          <div>
+            <h2>Battle Board</h2>
+            <p class="muted">
+              Click your piece, then a highlighted square to move or capture.
+            </p>
+          </div>
+          <div class="legend">
+            <span class="legend-item visible">Visible</span>
+            <span class="legend-item fog">Fog</span>
+            <span class="legend-item move">Legal move</span>
+          </div>
+        </div>
+        <div id="board" class="board" aria-label="Chess board"></div>
+      </section>
+    </main>
+
+    <footer>
+      <p>
+        Standard chess piece SVG assets courtesy of Wikimedia Commons.
+      </p>
+    </footer>
+
+    <script src="app.js"></script>
+  </body>
+</html>
