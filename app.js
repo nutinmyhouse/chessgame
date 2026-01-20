@@ -1,5 +1,13 @@
 const BOARD_SIZE = 8;
+const EDGE_INDICES = [0, 7];
 const PIECE_ORDER = ["queen", "rook", "bishop", "knight", "pawn"];
+const COLORS = [
+  { id: "green", label: "Green" },
+  { id: "blue", label: "Blue" },
+  { id: "red", label: "Red" },
+  { id: "purple", label: "Purple" },
+];
+
 const ASSETS = {
   queen: "https://upload.wikimedia.org/wikipedia/commons/4/49/Chess_qlt45.svg",
   rook: "https://upload.wikimedia.org/wikipedia/commons/5/5c/Chess_rlt45.svg",
@@ -18,8 +26,7 @@ const state = {
   viewAs: "green",
   logs: [],
   places: [],
-  assignedPlayerId: null,
-  connected: false,
+  bishopPlan: null,
 };
 
 const lobbyEl = document.getElementById("lobby");
@@ -30,98 +37,23 @@ const boardEl = document.getElementById("board");
 const viewSelectEl = document.getElementById("view-select");
 const logEl = document.getElementById("log");
 const bishopAnnouncementsEl = document.getElementById("bishop-announcements");
-const connectionEl = document.getElementById("connection");
 
 const resetButton = document.getElementById("reset");
+resetButton.addEventListener("click", () => initializeGame(true));
 
 const toCoord = (row, col) => `${String.fromCharCode(97 + col)}${BOARD_SIZE - row}`;
+
+const createEmptyBoard = () =>
+  Array.from({ length: BOARD_SIZE }, () => Array(BOARD_SIZE).fill(null));
+
 const getSquareColor = (row, col) => ((row + col) % 2 === 0 ? "light" : "dark");
+
 const inBounds = (row, col) => row >= 0 && row < 8 && col >= 0 && col < 8;
 
-let socket;
-
-const connectSocket = () => {
-  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-  socket = new WebSocket(`${protocol}://${window.location.host}`);
-
-  socket.addEventListener("open", () => {
-    state.connected = true;
-    renderConnectionStatus();
-  });
-
-  socket.addEventListener("close", () => {
-    state.connected = false;
-    renderConnectionStatus();
-  });
-
-  socket.addEventListener("message", (event) => {
-    const message = JSON.parse(event.data);
-    if (message.type === "state") {
-      applyState(message.state, message.assignedPlayerId);
-    }
-  });
-};
-
-const applyState = (serverState, assignedPlayerId) => {
-  state.players = serverState.players;
-  state.board = serverState.board;
-  state.joinedCount = serverState.joinedCount;
-  state.currentTurn = serverState.currentTurn;
-  state.active = serverState.active;
-  state.logs = serverState.logs;
-  state.places = serverState.places;
-  if (assignedPlayerId !== undefined) {
-    state.assignedPlayerId = assignedPlayerId;
-  }
-  if (!state.players.find((player) => player.id === state.viewAs)) {
-    state.viewAs = state.players[0]?.id || "green";
-  }
-  renderLobby();
-  renderViewSelect();
-  renderTurnInfo();
-  renderGrades();
-  renderBoard();
+const log = (message) => {
+  state.logs.unshift({ message, time: new Date() });
   renderLog();
-  renderBishopAnnouncements();
-  renderLobbyStatus();
 };
-
-const renderConnectionStatus = () => {
-  if (state.connected) {
-    connectionEl.textContent = "Connected to lobby server.";
-    connectionEl.classList.add("online");
-    connectionEl.classList.remove("offline");
-  } else {
-    connectionEl.textContent = "Disconnected. Start the server to play.";
-    connectionEl.classList.remove("online");
-    connectionEl.classList.add("offline");
-  }
-};
-
-const renderLobbyStatus = () => {
-  if (!state.connected) {
-    lobbyStatusEl.textContent = "Waiting for server connection.";
-    return;
-  }
-  if (state.joinedCount < 4) {
-    lobbyStatusEl.textContent = `${state.joinedCount} of 4 players joined.`;
-    return;
-  }
-  lobbyStatusEl.textContent = state.active
-    ? "Lobby full. Game started!"
-    : "Lobby full. Preparing game.";
-};
-
-const sendMessage = (payload) => {
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
-    return;
-  }
-  socket.send(JSON.stringify(payload));
-};
-
-resetButton.addEventListener("click", () => {
-  sendMessage({ type: "reset" });
-});
 
 const renderLobby = () => {
   lobbyEl.innerHTML = "";
@@ -129,15 +61,11 @@ const renderLobby = () => {
     const card = document.createElement("div");
     card.className = "lobby-card";
     const label = document.createElement("span");
-    const assignedTag =
-      state.assignedPlayerId === player.id ? " (you)" : "";
-    label.textContent = `${player.label} player${assignedTag}`;
+    label.textContent = `${player.label} player`;
     const action = document.createElement("button");
     action.textContent = player.joined ? "Joined" : "Join";
-    action.disabled = player.joined || Boolean(state.assignedPlayerId);
-    action.addEventListener("click", () => {
-      sendMessage({ type: "join", playerId: player.id });
-    });
+    action.disabled = player.joined;
+    action.addEventListener("click", () => joinPlayer(player.id));
     card.append(label, action);
     lobbyEl.append(card);
   });
@@ -165,17 +93,11 @@ const renderTurnInfo = () => {
     return;
   }
   const currentPlayer = state.players[state.currentTurn];
-  const viewingLabel =
-    state.players.find((player) => player.id === state.viewAs)?.label ||
-    "Unknown";
-  const assignedLabel = state.assignedPlayerId
-    ? state.players.find((player) => player.id === state.assignedPlayerId)
-        ?.label
-    : "Spectator";
   turnInfoEl.innerHTML = `
     <p><strong>Current turn:</strong> ${currentPlayer.label}</p>
-    <p><strong>Viewing as:</strong> ${viewingLabel}</p>
-    <p><strong>Your seat:</strong> ${assignedLabel}</p>
+    <p><strong>Viewing as:</strong> ${
+      state.players.find((player) => player.id === state.viewAs).label
+    }</p>
     <p class="muted">Turn order: ${state.players
       .map((player) => player.label)
       .join(" → ")}</p>
@@ -201,10 +123,12 @@ const renderLog = () => {
     return;
   }
   logEl.innerHTML = state.logs
-    .map((entry) => {
-      const time = new Date(entry.time).toLocaleTimeString();
-      return `<div><strong>${time}:</strong> ${entry.message}</div>`;
-    })
+    .map(
+      (entry) =>
+        `<div><strong>${entry.time.toLocaleTimeString()}:</strong> ${
+          entry.message
+        }</div>`
+    )
     .join("");
 };
 
@@ -257,7 +181,7 @@ const renderBoard = () => {
         square.classList.add("fogged");
       }
 
-      const pieceId = state.board[row]?.[col];
+      const pieceId = state.board[row][col];
       if (pieceId && (isVisible || !state.active)) {
         const player = state.players.find((p) => p.id === pieceId);
         const img = document.createElement("img");
@@ -280,17 +204,16 @@ const renderBoard = () => {
 };
 
 const handleSquareClick = (row, col) => {
-  if (!state.active || !state.connected) {
+  if (!state.active) {
     return;
   }
   const currentPlayer = state.players[state.currentTurn];
-  if (!currentPlayer || currentPlayer.finishedPlace) {
-    return;
-  }
-  if (!state.assignedPlayerId || state.assignedPlayerId !== currentPlayer.id) {
+  if (currentPlayer.finishedPlace) {
+    advanceTurn();
     return;
   }
   if (state.viewAs !== currentPlayer.id) {
+    log("You can only move while viewing the current player.");
     return;
   }
 
@@ -309,16 +232,116 @@ const handleSquareClick = (row, col) => {
 
   const legalMoves = getLegalMoves(currentPlayer);
   if (legalMoves.has(key)) {
-    sendMessage({ type: "move", row, col });
+    executeMove(currentPlayer, row, col);
     state.selectedSquare = null;
+    renderBoard();
+    renderGrades();
+    renderBishopAnnouncements();
+    advanceTurn();
   } else {
     state.selectedSquare = null;
+    renderBoard();
   }
-  renderBoard();
 };
 
+const initializeGame = (reset = false) => {
+  state.players = COLORS.map((color) => ({
+    id: color.id,
+    label: color.label,
+    pieceType: "queen",
+    joined: false,
+    position: null,
+    finishedPlace: null,
+    bishopAnnouncement: null,
+  }));
+  state.board = createEmptyBoard();
+  state.joinedCount = 0;
+  state.currentTurn = 0;
+  state.active = false;
+  state.selectedSquare = null;
+  state.viewAs = "green";
+  state.logs = [];
+  state.places = [];
+  state.bishopPlan = null;
+  renderLobby();
+  renderViewSelect();
+  renderTurnInfo();
+  renderGrades();
+  renderBoard();
+  renderLog();
+  renderBishopAnnouncements();
+  lobbyStatusEl.textContent = "Waiting for 4 players to join.";
+  if (reset) {
+    log("Game reset. Waiting for players to join.");
+  }
+};
+
+const joinPlayer = (playerId) => {
+  const player = state.players.find((entry) => entry.id === playerId);
+  if (!player || player.joined) {
+    return;
+  }
+  player.joined = true;
+  state.joinedCount += 1;
+  renderLobby();
+  log(`${player.label} joined the lobby.`);
+  if (state.joinedCount === 4) {
+    startGame();
+  } else {
+    lobbyStatusEl.textContent = `${state.joinedCount} of 4 players joined.`;
+  }
+};
+
+const startGame = () => {
+  state.active = true;
+  lobbyStatusEl.textContent = "Lobby full. Game started!";
+  placeInitialQueens();
+  state.currentTurn = 0;
+  renderBoard();
+  renderGrades();
+  renderTurnInfo();
+  log("All players joined. Queens deployed to the outer ring.");
+};
+
+const placeInitialQueens = () => {
+  const positions = [];
+  const maxAttempts = 200;
+  let attempts = 0;
+  while (positions.length < 4 && attempts < maxAttempts) {
+    attempts += 1;
+    const row = EDGE_INDICES[Math.floor(Math.random() * 2)];
+    const col = Math.floor(Math.random() * BOARD_SIZE);
+    if (!isEdgeSquare(row, col)) {
+      continue;
+    }
+    if (positions.some((pos) => pos.row === row && pos.col === col)) {
+      continue;
+    }
+    const testPosition = { row, col };
+    if (positions.some((pos) => isVisibleFrom(pos, testPosition))) {
+      continue;
+    }
+    positions.push(testPosition);
+  }
+
+  state.players.forEach((player, index) => {
+    const position = positions[index] || getFallbackEdgePosition(index);
+    player.position = position;
+    state.board[position.row][position.col] = player.id;
+  });
+};
+
+const getFallbackEdgePosition = (index) => {
+  const row = EDGE_INDICES[index % 2];
+  const col = index % BOARD_SIZE;
+  return { row, col };
+};
+
+const isEdgeSquare = (row, col) =>
+  EDGE_INDICES.includes(row) || EDGE_INDICES.includes(col);
+
 const getVisibleSquares = (player) => {
-  if (!player?.position) {
+  if (!player.position) {
     return new Set();
   }
   const moves = getPieceVision(player, player.position, true);
@@ -327,7 +350,7 @@ const getVisibleSquares = (player) => {
 };
 
 const getLegalMoves = (player) => {
-  if (!player?.position) {
+  if (!player.position) {
     return new Set();
   }
   return getPieceVision(player, player.position, false);
@@ -338,15 +361,13 @@ const getPieceVision = (player, position, forVision) => {
   const { row, col } = position;
   const pieceType = player.pieceType;
 
-  const addMove = (nextRow, nextCol, allowCapture = true) => {
+  const addMove = (nextRow, nextCol) => {
     if (!inBounds(nextRow, nextCol)) {
       return false;
     }
     const occupant = state.board[nextRow][nextCol];
     if (occupant) {
-      if (allowCapture || forVision) {
-        moves.add(`${nextRow},${nextCol}`);
-      }
+      moves.add(`${nextRow},${nextCol}`);
       return false;
     }
     moves.add(`${nextRow},${nextCol}`);
@@ -411,45 +432,14 @@ const getPieceVision = (player, position, forVision) => {
       });
       break;
     case "pawn":
-      if (forVision) {
-        [
-          [1, 0],
-          [-1, 0],
-          [0, 1],
-          [0, -1],
-          [1, 1],
-          [1, -1],
-          [-1, 1],
-          [-1, -1],
-        ].forEach(([dr, dc]) => {
-          addMove(row + dr, col + dc, true);
-        });
-      } else {
-        [
-          [1, 0],
-          [-1, 0],
-          [0, 1],
-          [0, -1],
-        ].forEach(([dr, dc]) => {
-          addMove(row + dr, col + dc, false);
-        });
-        [
-          [1, 1],
-          [1, -1],
-          [-1, 1],
-          [-1, -1],
-        ].forEach(([dr, dc]) => {
-          const nextRow = row + dr;
-          const nextCol = col + dc;
-          if (!inBounds(nextRow, nextCol)) {
-            return;
-          }
-          const occupant = state.board[nextRow][nextCol];
-          if (occupant && occupant !== player.id) {
-            moves.add(`${nextRow},${nextCol}`);
-          }
-        });
-      }
+      [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1],
+      ].forEach(([dr, dc]) => {
+        addMove(row + dr, col + dc);
+      });
       break;
     default:
       break;
@@ -471,5 +461,185 @@ const getPieceVision = (player, position, forVision) => {
   return moves;
 };
 
-connectSocket();
-renderConnectionStatus();
+const executeMove = (player, row, col) => {
+  const target = state.board[row][col];
+  const from = player.position;
+  if (!from) {
+    return;
+  }
+
+  if (target && target !== player.id) {
+    handleCapture(player, target);
+    return;
+  }
+
+  state.board[from.row][from.col] = null;
+  state.board[row][col] = player.id;
+  player.position = { row, col };
+  log(`${player.label} moved to ${toCoord(row, col)}.`);
+};
+
+const handleCapture = (attacker, targetId) => {
+  const targetPlayer = state.players.find((player) => player.id === targetId);
+  if (!targetPlayer) {
+    return;
+  }
+  const targetCoord = toCoord(targetPlayer.position.row, targetPlayer.position.col);
+  if (attacker.pieceType === "pawn") {
+    state.board[attacker.position.row][attacker.position.col] = null;
+    attacker.position = null;
+    const place = state.places.length + 1;
+    attacker.finishedPlace = place;
+    state.places.push(attacker.id);
+    log(
+      `${attacker.label} pawn captured at ${targetCoord} and claimed ${place} place!`
+    );
+    if (state.places.length === 4) {
+      state.active = false;
+      log("All places taken. Game over.");
+    }
+    return;
+  }
+
+  downgradePiece(attacker);
+  relocateToEdge(attacker);
+  if (attacker.pieceType === "bishop") {
+    assignBishopAnnouncement(attacker);
+  }
+  log(
+    `${attacker.label} captured ${targetPlayer.label} on ${targetCoord}, downgraded to ${
+      attacker.pieceType
+    }, and redeployed to the outer ring.`
+  );
+};
+
+const downgradePiece = (player) => {
+  const currentIndex = PIECE_ORDER.indexOf(player.pieceType);
+  if (currentIndex < PIECE_ORDER.length - 1) {
+    player.pieceType = PIECE_ORDER[currentIndex + 1];
+  }
+
+  if (player.pieceType !== "bishop") {
+    player.bishopAnnouncement = null;
+  }
+};
+
+const assignBishopAnnouncement = (player) => {
+  if (!player.position) {
+    return;
+  }
+  const squareColor = getSquareColor(player.position.row, player.position.col);
+  if (!state.bishopPlan) {
+    const remaining = state.players
+      .filter((entry) => entry.id !== player.id)
+      .map((entry) => entry.id);
+    const sameColorAssignee =
+      remaining[Math.floor(Math.random() * remaining.length)];
+    state.bishopPlan = {
+      anchorColor: squareColor,
+      sameColorAssignee,
+    };
+  }
+  let requiredColor = "opposite";
+  if (state.bishopPlan.sameColorAssignee === player.id) {
+    requiredColor = "same";
+  }
+
+  const expectedColor =
+    requiredColor === "same"
+      ? state.bishopPlan.anchorColor
+      : state.bishopPlan.anchorColor === "light"
+      ? "dark"
+      : "light";
+
+  if (squareColor !== expectedColor) {
+    relocateToEdge(player, expectedColor);
+  }
+
+  player.bishopAnnouncement = expectedColor;
+  log(`${player.label} bishop announced on ${expectedColor} squares.`);
+};
+
+const relocateToEdge = (player, colorPreference = null) => {
+  if (!player.position) {
+    return;
+  }
+  state.board[player.position.row][player.position.col] = null;
+
+  const candidates = [];
+  for (let row = 0; row < BOARD_SIZE; row += 1) {
+    for (let col = 0; col < BOARD_SIZE; col += 1) {
+      if (!isEdgeSquare(row, col)) {
+        continue;
+      }
+      if (state.board[row][col]) {
+        continue;
+      }
+      if (colorPreference && getSquareColor(row, col) !== colorPreference) {
+        continue;
+      }
+      if (isSquareVisibleToAnyOpponent(row, col, player.id)) {
+        continue;
+      }
+      candidates.push({ row, col });
+    }
+  }
+
+  if (!candidates.length) {
+    for (let row = 0; row < BOARD_SIZE; row += 1) {
+      for (let col = 0; col < BOARD_SIZE; col += 1) {
+        if (isEdgeSquare(row, col) && !state.board[row][col]) {
+          candidates.push({ row, col });
+        }
+      }
+    }
+  }
+
+  const chosen =
+    candidates[Math.floor(Math.random() * candidates.length)] ||
+    getFallbackEdgePosition(0);
+  player.position = chosen;
+  state.board[chosen.row][chosen.col] = player.id;
+  if (player.pieceType === "bishop") {
+    player.bishopAnnouncement = getSquareColor(chosen.row, chosen.col);
+  }
+};
+
+const isSquareVisibleToAnyOpponent = (row, col, playerId) =>
+  state.players.some((opponent) => {
+    if (opponent.id === playerId || opponent.finishedPlace || !opponent.position) {
+      return false;
+    }
+    const visible = getVisibleSquares(opponent);
+    return visible.has(`${row},${col}`);
+  });
+
+const advanceTurn = () => {
+  if (!state.active) {
+    return;
+  }
+  let nextIndex = state.currentTurn;
+  for (let i = 0; i < state.players.length; i += 1) {
+    nextIndex = (nextIndex + 1) % state.players.length;
+    if (!state.players[nextIndex].finishedPlace) {
+      break;
+    }
+  }
+  state.currentTurn = nextIndex;
+  renderTurnInfo();
+  renderBoard();
+};
+
+const isVisibleFrom = (origin, target) => {
+  const deltaRow = target.row - origin.row;
+  const deltaCol = target.col - origin.col;
+  if (deltaRow === 0 || deltaCol === 0) {
+    return true;
+  }
+  if (Math.abs(deltaRow) === Math.abs(deltaCol)) {
+    return true;
+  }
+  return false;
+};
+
+initializeGame();

@@ -91,14 +91,6 @@ main {
   font-weight: 600;
 }
 
-.status.online {
-  color: #7ee2a8;
-}
-
-.status.offline {
-  color: #ff8f8f;
-}
-
 .turn-info,
 .grades,
 .announcements,
